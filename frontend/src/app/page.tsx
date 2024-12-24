@@ -5,6 +5,7 @@ import { Loader2, Send } from "lucide-react";
 import { DropdownMenuFilters } from "@/components/Filters";
 import DownloadButton from "@/components/DownloadButton";
 import { PromptTextarea } from "@/components/PromptTextarea";
+import { generateImage } from "./actions/generate";
 
 export default function Home() {
   const [prompt, setPrompt] = useState("");
@@ -27,21 +28,10 @@ export default function Home() {
     try {
       console.log("seed", seed);
       const currentPrompt = prompt;
-
-      const response = await fetch("/api/generate", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ currentPrompt, imageSize, seed }),
-      });
-
-      const { image } = await response.json();
-      setGeneratedImage(image);
+      const imageUrl = await generateImage(currentPrompt, imageSize, seed);
+      setGeneratedImage(imageUrl);
     } catch (error) {
       console.error("Error:", error);
-    } finally {
-      setGeneratedImageSize(imageSize);
       setIsLoading(false);
     }
   };
@@ -51,10 +41,7 @@ export default function Home() {
       <form onSubmit={handleSubmit} className="w-full flex justify-center mt-8">
         <div className="flex flex-col space-y-4">
           <div className="flex gap-2">
-            <PromptTextarea
-              value={prompt}
-              onChange={setPrompt}
-            />
+            <PromptTextarea value={prompt} onChange={setPrompt} />
             <div className="flex flex-col gap-2">
               <Button
                 type="submit"
@@ -82,24 +69,32 @@ export default function Home() {
         </div>
       </form>
 
-      <div className="flex justify-center mt-8">
-        {generatedImage && (
-          <div className="w-[700px] h-[700px] flex items-center justify-center">
+      {generatedImage && (
+        <div className="mt-8 mx-auto w-[700px] h-[700px] relative">
+          <div className="absolute inset-0 bg-red-0 flex items-center justify-center overflow-hidden">
             <div className="relative group flex items-center justify-center">
               <img
                 src={generatedImage}
                 alt="Generated image"
-                className={`${
+                className={`w-auto h-auto transition-opacity duration-300 ease-in-out ${
+                  isLoading ? "opacity-0" : "opacity-100"
+                } ${
                   generatedImageSize === "square"
-                    ? "max-w-[512px] max-h-[576px]"
+                    ? "max-w-[576px] max-h-[576px]"
                     : "max-w-[700px] max-h-[700px]"
-                } w-auto h-auto object-contain rounded-xl shadow-xl border border-gray-300`}
+                } rounded-lg shadow-xl object-contain`}
+                onLoad={(e) => {
+                  setTimeout(() => {
+                    setIsLoading(false);
+                    setGeneratedImageSize(imageSize);
+                  }, 100);
+                }}
               />
-              <DownloadButton imageUrl={generatedImage} />
+              {!isLoading && <DownloadButton imageUrl={generatedImage} />}
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

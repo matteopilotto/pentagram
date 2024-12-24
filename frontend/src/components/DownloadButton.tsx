@@ -12,7 +12,7 @@ const DownloadButton = ({ imageUrl }: DownloadButtonProps) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "generated-image.png";
+    a.download = imageUrl.split("/").pop() || "image.png";
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
