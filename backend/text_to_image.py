@@ -23,6 +23,8 @@ import io
 import random
 import time
 from pathlib import Path
+from fastapi import Request, Response, HTTPException
+import os
 
 import modal
 
@@ -59,7 +61,6 @@ image = (
 with image.imports():
     import diffusers
     import torch
-    from fastapi import Response
 
 # ## Implementing SD3.5 Large Turbo inference on Modal
 
@@ -77,6 +78,7 @@ with image.imports():
 
 # model_id = "adamo1139/stable-diffusion-3.5-medium-ungated"
 model_id = "adamo1139/stable-diffusion-3.5-large-turbo-ungated"
+# model_id = "black-forest-labs/FLUX.1-dev"
 # model_revision_id = "9ad870ac0b0e5e48ced156bb02f85d324b7275d2"
 
 
@@ -85,6 +87,7 @@ model_id = "adamo1139/stable-diffusion-3.5-large-turbo-ungated"
     # gpu="a10g",
     gpu="a100",
     timeout=10 * MINUTES,
+    secrets=[modal.Secret.from_name("text-to-image")],
 )
 class Inference:
 
@@ -95,11 +98,57 @@ class Inference:
             model_id,
             # revision=model_revision_id,
             torch_dtype=torch.bfloat16,
+            token=os.getenv("HF_API_KEY"),
         )
+
+        # enable memory optimizations
+        # self.pipe.enable_model_cpu_offload()
+        # self.pipe.enable_vae_slicing()
+        self.pipe.enable_attention_slicing(slice_size="auto")
+
+        # enable xformers if available
+        try:
+            self.pipe.enable_xformers_memory_efficient_attention()
+        except:
+            pass
+
+        self.MODAL_API_KEY = os.getenv("MODAL_API_KEY")
 
     @modal.enter()
     def move_to_gpu(self):
         self.pipe.to("cuda")
+
+        # components = [attr for attr in dir(self.pipe) if not attr.startswith('_')]
+        # print("Available components:", components)
+
+        # Compile the text encoders and transformer
+        # if hasattr(self.pipe, 'text_encoder'):
+        #     self.pipe.text_encoder = torch.compile(
+        #         self.pipe.text_encoder,
+        #         mode="reduce-overhead",
+        #         fullgraph=True
+        #     )
+        
+        # if hasattr(self.pipe, 'text_encoder_2'):
+        #     self.pipe.text_encoder_2 = torch.compile(
+        #         self.pipe.text_encoder_2,
+        #         mode="reduce-overhead",
+        #         fullgraph=True
+        #     )
+        
+        # if hasattr(self.pipe, 'text_encoder_3'):
+        #     self.pipe.text_encoder_3 = torch.compile(
+        #         self.pipe.text_encoder_3,
+        #         mode="reduce-overhead",
+        #         fullgraph=True
+        #     )
+        
+        # if hasattr(self.pipe, 'transformer'):
+        #     self.pipe.transformer = torch.compile(
+        #         self.pipe.transformer,
+        #         mode="reduce-overhead",
+        #         fullgraph=True
+        #     )
 
     @modal.method()
     def run(
@@ -110,15 +159,16 @@ class Inference:
         torch.manual_seed(seed)
         print("Size:", size, "Seed:", seed)
         size2pixels = {"square": [1024, 1024], "landscape": [1024, 576], "portrait": [576, 1024]}
-        images = self.pipe(
-            prompt,
-            width=size2pixels[size][0],  
-            height=size2pixels[size][1],
-            num_images_per_prompt=batch_size,  # outputting multiple images per prompt is much cheaper than separate calls
-            num_inference_steps=4,  # turbo is tuned to run in four steps
-            guidance_scale=0.0,  # turbo doesn't use CFG
-            max_sequence_length=512,  # T5-XXL text encoder supports longer sequences, more complex prompts
-        ).images
+        with torch.inference_mode():
+            images = self.pipe(
+                prompt,
+                width=size2pixels[size][0],  
+                height=size2pixels[size][1],
+                num_images_per_prompt=batch_size,  # outputting multiple images per prompt is much cheaper than separate calls
+                num_inference_steps=4,  # turbo is tuned to run in four steps
+                guidance_scale=0.0,  # turbo doesn't use CFG
+                max_sequence_length=512,  # T5-XXL text encoder supports longer sequences, more complex prompts
+            ).images
 
         print("Generated", len(images), "images")
         print(f"Images have shape {images[0].size}")
@@ -132,7 +182,12 @@ class Inference:
         return image_output
 
     @modal.web_endpoint(docs=True)
-    def web(self, prompt: str, seed: int = None, batch_size: int = 1, size: str = "square"):
+    def web(self, request: Request, prompt: str, seed: int = None, batch_size: int = 1, size: str = "square"):
+        api_key = request.headers.get("x-api-key")
+
+        if api_key != self.MODAL_API_KEY:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        
         return Response(
             content=self.run.local(  # run in the same container
                 prompt, batch_size=batch_size, seed=seed, size=size
